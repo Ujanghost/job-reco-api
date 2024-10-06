@@ -36,18 +36,47 @@ class JobPosting(BaseModel):
     job_type: str
     experience_level: str
 
-def match_job_postings(user_profile: UserProfile) -> List[JobPosting]:
+def calculate_match_score(job: dict, user_profile: UserProfile) -> float:
+    score = 0.0
+    
+    # Title match (30% weight)
+    if job["job_title"] in user_profile.preferences.desired_roles:
+        score += 30
+
+    # Location match (20% weight)
+    if job["location"] in user_profile.preferences.locations:
+        score += 20
+
+    # Job type match (10% weight)
+    if job["job_type"] == user_profile.preferences.job_type:
+        score += 10
+
+    # Experience level match (10% weight)
+    if job["experience_level"] == user_profile.experience_level:
+        score += 10
+
+    # Skills match (30% weight)
+    user_skills = set(user_profile.skills)
+    job_skills = set(job["required_skills"])
+    skill_match_ratio = len(user_skills.intersection(job_skills)) / len(job_skills)
+    score += 30 * skill_match_ratio
+
+    return score
+
+def match_job_postings(user_profile: UserProfile) -> List[dict]:
     matching_jobs = []
     for job in job_postings_collection.find():
-        if (
-            job["job_title"] in user_profile.preferences.desired_roles
-            and job["location"] in user_profile.preferences.locations
-            and job["job_type"] == user_profile.preferences.job_type
-            and job["experience_level"] == user_profile.experience_level
-            and any(skill in job["required_skills"] for skill in user_profile.skills)
-        ):
-            matching_jobs.append(JobPosting(**job))
-    return matching_jobs
+        match_score = calculate_match_score(job, user_profile)
+        if match_score > 0:
+            job_dict = dict(job)
+            job_dict['match_score'] = match_score
+            job_dict['_id'] = str(job_dict['_id'])  # Convert ObjectId to string
+            matching_jobs.append(job_dict)
+    
+    # Sort jobs by match score in descending order
+    matching_jobs.sort(key=lambda x: x['match_score'], reverse=True)
+    
+    return matching_jobs[:10]  # Return top 10 matches
 
 @app.post("/user_profile")
 async def create_user_profile(user_profile: UserProfile):
@@ -64,6 +93,7 @@ async def get_job_recommendations(user_id: str):
         if not user_profile:
             raise HTTPException(status_code=404, detail="User profile not found")
         
+        user_profile['_id'] = str(user_profile['_id'])  # Convert ObjectId to string
         matching_jobs = match_job_postings(UserProfile(**user_profile))
         return matching_jobs
     except Exception as e:
@@ -81,7 +111,9 @@ async def create_job_posting(job_posting: JobPosting):
 async def get_all_job_postings():
     try:
         job_postings = list(job_postings_collection.find())
-        return [JobPosting(**job) for job in job_postings]
+        for job in job_postings:
+            job['_id'] = str(job['_id'])  # Convert ObjectId to string
+        return job_postings
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get job postings: {str(e)}")
 
